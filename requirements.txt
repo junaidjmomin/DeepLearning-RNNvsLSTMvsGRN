@@ -1,11 +1,2 @@
-pandas
-numpy
-
-python=3.14.8
-
-#Required for downloading the ConvoLab-3 Dataset !!
-git clone --depth 1 https://github.com/ConvLab/ConvLab-3.git
-# pip install convlab used to download the convolab from the cloned 
-pip install convlab
-
-tensorflow
+numpy>=1.24,<3
+tensorflow>=2.15,<2.20
