@@ -1,2 +1,6 @@
 numpy>=1.24,<3
 tensorflow>=2.15,<2.20
+fastapi>=0.110,<1
+uvicorn[standard]>=0.27,<1
+streamlit>=1.32,<2
+requests>=2.31,<3
