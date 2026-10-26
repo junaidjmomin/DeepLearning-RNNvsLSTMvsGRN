@@ -1,0 +1,24 @@
+services:
+  api:
+    build: .
+    command: uvicorn api.main:app --host 0.0.0.0 --port 8000
+    environment:
+      GRU_MODEL_PATH: /app/artifacts/models/gru_best.keras
+      RNN_MODEL_PATH: /app/artifacts/models/rnn_best.keras
+      LSTM_MODEL_PATH: /app/artifacts/models/lstm_best.keras
+    volumes:
+      - ./artifacts:/app/artifacts:ro
+    ports:
+      - "8000:8000"
+
+  app:
+    build: .
+    command: streamlit run app/streamlit_app.py --server.address 0.0.0.0 --server.port 8501
+    environment:
+      CONTEXTNEXT_API_URL: http://api:8000
+    volumes:
+      - ./results:/app/results:ro
+    ports:
+      - "8501:8501"
+    depends_on:
+      - api
