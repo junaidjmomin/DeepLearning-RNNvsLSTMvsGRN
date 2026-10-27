@@ -57,6 +57,7 @@ def load_examples(
     vocabulary: Vocabulary,
     sequence_length: int,
     limit: int | None = None,
+    require_exact_context: bool = False,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Return padded context IDs and next-token IDs from one processed split."""
 
@@ -81,6 +82,12 @@ def load_examples(
         # CHOICE: when a context is too long, use its most recent words because
         # they are usually the most useful for next-word prediction.
         tokens = record["input"].split()[-sequence_length:]
+        if require_exact_context and len(record["input"].split()) != sequence_length:
+            raise ValueError(
+                f"Record {index} in {path} has {len(record['input'].split())} context words; "
+                f"expected {sequence_length}. Regenerate that split with "
+                f"python -m src.data.preprocess --context-size {sequence_length}."
+            )
         encoded = [vocabulary.encode(token) for token in tokens]
         contexts[index, sequence_length - len(encoded) :] = encoded
         targets[index] = vocabulary.encode(record["target"])

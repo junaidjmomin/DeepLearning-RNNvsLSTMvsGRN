@@ -1,41 +1,38 @@
+"""Build a deterministic vocabulary from the training split only."""
+
+from __future__ import annotations
+
+import argparse
 import json
 from pathlib import Path
 
-# PATHS
-train_path=Path("data/processed/train.json")
-vocab_path=Path("data/processed/vocab.json")
 
-# LOADING THE DATA FROM THE FILE !
-with open(train_path,"r",encoding='utf-8') as file:
-    trainingdata=json.load(file)
-
-# Store All unique words !!
-unique_words=set()
-
-for data in trainingdata:
-    seprated_input_word=data["input"].split()
-
-    # Storing all targeted unique words in the set!!
-    if(seprated_input_word):
-        unique_words.update(seprated_input_word)
-
-    # Storing all the input words in the set!!
-    seprated_target_word=data["target"].split()
-
-    if(seprated_target_word):
-        unique_words.update(seprated_target_word) #update method takes an iterable and add separate elements to the set!!
+def build_vocabulary(train_path: Path, output_path: Path) -> int:
+    with Path(train_path).open(encoding="utf-8") as handle:
+        records = json.load(handle)
+    if not isinstance(records, list):
+        raise ValueError("Training split must be a JSON list")
+    words = set()
+    for record in records:
+        if not isinstance(record, dict) or not isinstance(record.get("input"), str) or not isinstance(record.get("target"), str):
+            raise ValueError("Each training record needs string input and target")
+        words.update(record["input"].split())
+        words.update(record["target"].split())
+    vocabulary = {word: index for index, word in enumerate(sorted(words))}
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("w", encoding="utf-8") as handle:
+        json.dump(vocabulary, handle, ensure_ascii=False, indent=2)
+    return len(vocabulary)
 
 
-#Dictionary Loop!!
-vocab_data={}
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Build vocabulary from a training split")
+    parser.add_argument("--train-data", type=Path, default=Path("data/processed/train.json"))
+    parser.add_argument("--output", type=Path, default=Path("data/processed/vocab.json"))
+    args = parser.parse_args()
+    print(f"Vocabulary size: {build_vocabulary(args.train_data, args.output)}")
 
-for ind,data in enumerate(sorted(unique_words)):
-    vocab_data[data]=ind
 
-vocab_path.parent.mkdir(parents=True,exist_ok=True)
-
-with open(vocab_path,"w",encoding='utf-8') as file:
-    json.dump(vocab_data,file,indent=2,ensure_ascii=False)
-
-print("Vocabulary Size:",len(vocab_data))
-print("First Few examples : ",list(vocab_data.items())[:10])
+if __name__ == "__main__":
+    main()

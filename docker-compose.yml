@@ -2,10 +2,6 @@ services:
   api:
     build: .
     command: uvicorn api.main:app --host 0.0.0.0 --port 8000
-    environment:
-      GRU_MODEL_PATH: /app/artifacts/models/gru_best.keras
-      RNN_MODEL_PATH: /app/artifacts/models/rnn_best.keras
-      LSTM_MODEL_PATH: /app/artifacts/models/lstm_best.keras
     volumes:
       - ./artifacts:/app/artifacts:ro
     ports:

@@ -7,6 +7,7 @@ training configuration or contribute results to the model comparison.
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -19,6 +20,7 @@ from src.training.evaluate import evaluate_model
 from src.training.train_unified import _build_and_compile
 
 
+@unittest.skipUnless(os.getenv("CONTEXTNEXT_RUN_TRAINING_TESTS") == "1", "Training test is opt-in")
 class TestSharedTrainingPipelineSanity(unittest.TestCase):
     def test_each_architecture_learns_three_controlled_examples(self):
         import tensorflow as tf

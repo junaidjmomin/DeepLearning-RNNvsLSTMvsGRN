@@ -54,11 +54,11 @@ All required for fair comparison:
 - `cross_entropy`, `perplexity`
 - `top_1_accuracy`, `top_3_accuracy`
 - `mse`, `mae`, `rmse`
-- `model` (e.g., `lstm`, `vanilla_rnn`, `gru`), `sequence_length`, `best_checkpoint`, `choices` (hyperparams)
+- `model` (e.g., `lstm`, `rnn`, `gru`), `sequence_length`, `best_checkpoint`, `checkpoint_monitor`, `choices` (hyperparams)
 
 ## Data & fairness
 
-- Use the same processed splits: `data/processed/train.json`, `validation.json`, `test.json`
+- For context length 3, use `data/processed/train.json`, `validation.json`, and `test.json`. For another length, generate matching splits first with `python -m src.data.preprocess --context-size N`; the trainer then reads `data/processed_ctxN/`.
 - Use the same `data/processed/vocab.json` (shared vocabulary)
 - Keep seed, context length, embedding size, hidden units, dropout, learning rate, batch size aligned when doing a like-for-like comparison. If you deviate, record it in `choices` and in the config.
 - Use the shared evaluator (`src/training/evaluate.py`) for test metrics.
@@ -69,12 +69,13 @@ All required for fair comparison:
 - Shared predictor (`src/inference/predictor.NextWordPredictor`) looks for default checkpoints in `artifacts/models/` and respects env vars: `GRU_MODEL_PATH`, `RNN_MODEL_PATH`, `LSTM_MODEL_PATH`.
 - FastAPI serves `POST /predict` and `GET /health`; health reports which model checkpoints are available.
 - Streamlit reads all `*_test_metrics.json` in `results/` and displays them; only models with available checkpoints are selectable in prediction.
-- Docker compose mounts `./artifacts:/app/artifacts:ro` and `./results:/app/results:ro` — so artifacts/results must exist before `docker compose up --build` works as intended.
+- Docker Compose mounts `./artifacts:/app/artifacts:ro` and `./results:/app/results:ro`. Train models before expecting prediction endpoints to serve them.
 
 ## Commands (reference)
 
-- Train LSTM ctx3: `python -m src.training.train_lstm`
-- Train LSTM ctx5/10: `python -m src.training.train_lstm --sequence-length 5` / `--sequence-length 10`
+- Train LSTM ctx3: `python -m src.training.train_unified --model lstm`
+- Prepare ctx5/10: `python -m src.data.preprocess --context-size 5` / `--context-size 10`
+- Train LSTM ctx5/10: `python -m src.training.train_unified --model lstm --sequence-length 5` / `--sequence-length 10`
 - Analyze examples: `python -m src.training.analyze_predictions --model artifacts/models/lstm_best.keras`
 - API: `uvicorn api.main:app --reload`
 - UI: `streamlit run app/streamlit_app.py`

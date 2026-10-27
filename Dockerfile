@@ -16,15 +16,14 @@ COPY src ./src
 COPY api ./api
 COPY app ./app
 
-# Copy processed vocabulary (required at runtime)
-COPY data/processed/vocab.json ./data/processed/vocab.json
+# The API needs the labelled splits as well as the vocabulary.
+COPY data/processed ./data/processed
+COPY data/raw/dailydialog/data/dialogues.json ./data/raw/dailydialog/data/dialogues.json
+RUN python -m src.data.preprocess --context-size 5 && \
+    python -m src.data.preprocess --context-size 10
 
-# Copy saved experiment results for the comparison dashboard
-COPY results ./results
-
-# Model checkpoints are mounted at runtime via docker-compose volumes.
-# If they exist at build time they will also be bundled.
-COPY artifacts ./artifacts
+# Checkpoints and experiment results are mounted by Docker Compose.
+RUN mkdir -p ./artifacts/models ./results
 
 # Expose API port and Streamlit port
 EXPOSE 8000 8501

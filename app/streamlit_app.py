@@ -47,6 +47,16 @@ def read_experiments() -> list[dict]:
             continue
         raw_model = str(payload.get("model") or path.name.removesuffix("_test_metrics.json"))
         choices = payload.get("choices") if isinstance(payload.get("choices"), dict) else {}
+        config_path = path.with_name(path.name.replace("_test_metrics.json", "_config.json"))
+        try:
+            config = json.loads(config_path.read_text(encoding="utf-8")) if config_path.is_file() else {}
+        except (OSError, ValueError):
+            config = {}
+        history_path = path.with_name(path.name.replace("_test_metrics.json", "_history.json"))
+        try:
+            history = json.loads(history_path.read_text(encoding="utf-8")) if history_path.is_file() else {}
+        except (OSError, ValueError):
+            history = {}
         context = payload.get("sequence_length", choices.get("context_words"))
         experiments.append(
             {
@@ -56,14 +66,16 @@ def read_experiments() -> list[dict]:
                 "_context": int(context) if context is not None else None,
                 "_run": path.stem,
                 "_choices": choices,
+                "_config": config,
+                "_history": history,
             }
         )
     return experiments
 
 
-def api_status() -> tuple[bool, dict]:
+def api_status(context_size: int = 3) -> tuple[bool, dict]:
     try:
-        response = requests.get(f"{API_URL}/health", timeout=2)
+        response = requests.get(f"{API_URL}/health", params={"context_size": context_size}, timeout=30)
         response.raise_for_status()
         return True, response.json()
     except (requests.RequestException, ValueError):
@@ -138,7 +150,6 @@ st.markdown(
 
 experiments = read_experiments()
 api_online, health = api_status()
-available_models = [name for name, info in health.get("models", {}).items() if info.get("available")] if api_online else []
 
 st.markdown(
     """
@@ -167,7 +178,7 @@ with overview_tab:
         with st.expander("What will be compared?"):
             st.write("Top-1 and Top-3 accuracy, cross-entropy, perplexity, RMSE, parameter count, training time, and inference latency.")
     else:
-        contexts = sorted({item["_context"] for item in experiments if item["_context"] is not None})
+        contexts = sorted({3, 5, 10} | {item["_context"] for item in experiments if item["_context"] is not None})
         context_options = ["All contexts"] + [f"{value} words" for value in contexts]
         selected_context = st.selectbox("Context window", context_options, index=1 if contexts else 0)
         if selected_context == "All contexts":
@@ -176,6 +187,8 @@ with overview_tab:
         else:
             chosen = int(selected_context.split()[0])
             visible = [item for item in experiments if item["_context"] == chosen]
+            if not visible:
+                st.info(f"No saved results for context length {chosen} yet. The full-data Colab notebook writes these after training.")
 
         # Headline metrics use the selected shared context. Direction is
         # explicit, so runtime and error measures are not mistaken for scores.
@@ -211,7 +224,7 @@ with overview_tab:
                     row[title] = format_metric(key, item[key])
             row["Examples"] = item.get("samples", "—")
             table_rows.append(row)
-        st.dataframe(pd.DataFrame(table_rows), hide_index=True, use_container_width=True)
+        st.dataframe(pd.DataFrame(table_rows), hide_index=True, width="stretch")
 
         available_metric_keys = [key for key in METRICS if any(item.get(key) is not None for item in visible)]
         if available_metric_keys:
@@ -238,6 +251,10 @@ with overview_tab:
                     {
                         "Model": item["_model"],
                         "Context": item.get("_context", "—"),
+                        "Train rows used": item.get("_config", {}).get("max_train_samples") or "All",
+                        "Test rows used": item.get("samples", "—"),
+                        "Epochs completed": item.get("epochs_completed", "—"),
+                        "Best checkpoint by": item.get("checkpoint_monitor", choices.get("checkpoint_monitor", "—")),
                         "Embedding": choices.get("embedding_dim", "—"),
                         "Hidden units": choices.get("rnn_units", choices.get("lstm_units", choices.get("gru_units", "—"))),
                         "Dropout": choices.get("dropout", "—"),
@@ -246,8 +263,22 @@ with overview_tab:
                         "Seed": choices.get("seed", "—"),
                     }
                 )
-            st.dataframe(pd.DataFrame(settings_rows), hide_index=True, use_container_width=True)
-            st.caption("Check these settings before attributing a score difference to architecture. Missing values mean the run did not record that setting.")
+            st.dataframe(pd.DataFrame(settings_rows), hide_index=True, width="stretch")
+            st.caption("A row cap means this is a diagnostic run. Compare architectures only when their data limits, context lengths, and settings match.")
+
+        with st.expander("Training and validation loss by epoch"):
+            history_rows = []
+            for item in visible:
+                history = item.get("_history", {})
+                for index, (training_loss, validation_loss) in enumerate(zip(history.get("loss", []), history.get("val_loss", [])), start=1):
+                    history_rows.append({"Epoch": index, "Run": f"{item['_model']} · {item['_context']} words", "Training loss": float(training_loss), "Validation loss": float(validation_loss)})
+            if history_rows:
+                frame = pd.DataFrame(history_rows)
+                for run, run_frame in frame.groupby("Run"):
+                    st.markdown(f"**{run}**")
+                    st.line_chart(run_frame.set_index("Epoch")[["Training loss", "Validation loss"]])
+            else:
+                st.caption("No saved training history is available for these runs.")
 
 def architecture_details(model_name: str) -> tuple[list[str], str]:
     if model_name == "rnn":
@@ -270,10 +301,15 @@ with prediction_tab:
     st.markdown('<div class="section-kicker">Interactive model experiment</div>', unsafe_allow_html=True)
     st.subheader("Run a next-word simulation")
     st.write("Choose an architecture and input, then inspect the actual token IDs, model scores, and labelled target.")
+    selected_context_length = st.selectbox("Context length", health.get("available_context_lengths", [3, 5, 10]))
+    context_online, context_health = api_status(selected_context_length) if api_online else (False, {})
+    available_models = [name for name, info in context_health.get("models", {}).items() if info.get("available")]
     if not api_online:
         st.warning("The prediction API is offline. Start it with `uvicorn api.main:app --reload` to run an experiment.")
+    elif not context_online:
+        st.warning("The API did not respond for this context length.")
     elif not available_models:
-        st.info("No usable model checkpoints are loaded. Check the paths shown by the API health endpoint.")
+        st.info(f"No usable context-{selected_context_length} checkpoints are loaded. Train the three models in Colab, copy their artifacts here, then restart the API.")
     else:
         model_options = (["all"] if len(available_models) > 1 else []) + available_models
         model_choice = st.selectbox(
@@ -295,7 +331,7 @@ with prediction_tab:
             try:
                 example_response = requests.get(
                     f"{API_URL}/examples",
-                    params={"split": split_choice, "q": search_query, "limit": 100},
+                    params={"split": split_choice, "q": search_query, "limit": 100, "context_size": selected_context_length},
                     timeout=30,
                 )
                 example_response.raise_for_status()
@@ -324,13 +360,43 @@ with prediction_tab:
                 "Input text",
                 value="vegetarian supreme and",
                 height=90,
-                help="The model uses the last three words for the default checkpoints.",
+                help=f"This checkpoint uses the last {selected_context_length} words.",
             )
+            context = " ".join(sentence.lower().split()[-selected_context_length:])
+            if len(context.split()) == selected_context_length:
+                try:
+                    match_response = requests.get(
+                        f"{API_URL}/examples",
+                        params={"split": "all", "q": context, "limit": 100, "context_size": selected_context_length},
+                        timeout=30,
+                    )
+                    match_response.raise_for_status()
+                    match_payload = match_response.json()
+                    exact_rows = [row for row in match_payload.get("examples", []) if row["input"] == context]
+                    if exact_rows:
+                        split_counts = {split: sum(row["split"] == split for row in exact_rows) for split in ("train", "validation", "test")}
+                        st.caption(
+                            f"Exact context found in the dataset: {split_counts['train']} train, "
+                            f"{split_counts['validation']} validation, {split_counts['test']} test row(s)."
+                        )
+                        if match_payload.get("has_more"):
+                            st.caption(f"Showing the first {len(exact_rows)} of {match_payload['total']} matching rows; choose one exact row for a reliable comparison.")
+                        if len({row["target"] for row in exact_rows}) > 1 or match_payload.get("has_more"):
+                            selected_id = st.selectbox(
+                                "Choose the actual next word for this dataset row",
+                                [None] + exact_rows,
+                                format_func=lambda row: "Show all possible targets" if row is None else f"{row['target']} · {row['split']} ({row['id']})",
+                            )
+                            example_id = selected_id["id"] if selected_id else None
+                        else:
+                            st.caption(f"Stored next word: **{exact_rows[0]['target']}**")
+                except requests.RequestException as exc:
+                    st.caption(f"Dataset lookup unavailable: {exc}")
 
         top_k = st.slider("Show top predictions", 1, 20, 5)
         run_clicked = st.button("Run simulation", type="primary")
         run_models = available_models if model_choice == "all" else [model_choice]
-        signature = (experiment_mode, sentence.strip(), example_id, model_choice, top_k)
+        signature = (selected_context_length, experiment_mode, sentence.strip(), example_id, model_choice, top_k)
 
         if run_clicked:
             if not sentence.strip():
@@ -346,6 +412,8 @@ with prediction_tab:
                                 "model": model_name,
                                 "top_k": top_k,
                                 "example_id": example_id,
+                                "include_trace": True,
+                                "context_size": selected_context_length,
                             },
                             timeout=60,
                         )
@@ -373,20 +441,46 @@ with prediction_tab:
                     zip(tokenization["context_tokens"], tokenization["token_ids"], tokenization["decoded_tokens"])
                 )
             ]
-            st.dataframe(pd.DataFrame(token_rows), hide_index=True, use_container_width=True)
+            st.dataframe(pd.DataFrame(token_rows), hide_index=True, width="stretch")
             st.caption(
                 f"Model context: {first_result['sequence_length']} words · vocabulary: {first_result['vocabulary_size']:,} IDs · "
                 f"checkpoint: `{first_result['checkpoint']}`"
             )
 
             st.markdown("### 3 · How does the model process it?")
-            architecture_columns = st.columns(len(model_results))
-            for column, result in zip(architecture_columns, model_results):
-                steps, explanation = architecture_details(result["model"])
-                with column:
-                    st.markdown(f"**{pretty_model(result['model'])}**")
+            trace_tabs = st.tabs([pretty_model(result["model"]) for result in model_results])
+            for tab, result in zip(trace_tabs, model_results):
+                with tab:
+                    steps, explanation = architecture_details(result["model"])
                     st.markdown(" → ".join(steps))
                     st.caption(explanation)
+                    trace = result.get("trace", {"available": False, "reason": "Trace was not requested."})
+                    if trace["available"]:
+                        st.caption(f"Actual checkpoint values · embedding width {trace['embedding_dimension']} · hidden units {trace['hidden_units']}")
+                        st.dataframe(pd.DataFrame([
+                            {
+                                "Step": step["position"],
+                                "Token": step["token"],
+                                "ID": step["token_id"],
+                                "Used": "Yes" if step["active"] else "Padding",
+                                "Embedding norm": round(step["embedding_norm"], 5),
+                                "First 6 embedding values": ", ".join(f"{value:.3f}" for value in step["embedding_preview"]),
+                                "Hidden state norm": round(step["hidden_norm"], 5),
+                                "First 6 hidden values": ", ".join(f"{value:.3f}" for value in step["hidden_preview"]),
+                                "Gate means": ", ".join(f"{name}={value:.3f}" for name, value in step.get("gates", {}).items()) or "—",
+                            }
+                            for step in trace["steps"]
+                        ]), hide_index=True, width="stretch")
+                        st.caption(f"Final hidden state, first 8 of {trace['hidden_units']} values: {trace['final_hidden_preview']}")
+                        if "final_cell_preview" in trace:
+                            st.caption(f"Final LSTM cell state, first 8 values: {trace['final_cell_preview']}")
+                        st.caption(f"Softmax probability total: {trace['output']['softmax_sum']:.6f}")
+                        if result["model"] != "rnn":
+                            st.caption("Gate means average each learned gate's activation across hidden units at that word.")
+                        with st.expander("Raw output scores before softmax"):
+                            st.dataframe(pd.DataFrame(trace["output"]["top_logits"]), hide_index=True, width="stretch")
+                    else:
+                        st.warning(trace["reason"])
 
             st.markdown("### 4 · What did it predict?")
             distribution_tabs = st.tabs([pretty_model(result["model"]) for result in model_results])
@@ -420,12 +514,14 @@ with prediction_tab:
                                 "Prediction": prediction["word"],
                                 "Actual": truth["target"],
                                 "Correct": "Yes" if truth["correct"] else "No",
+                                "P(prediction)": f"{prediction['probability']:.3%}",
                                 "P(actual)": f"{truth['probability']:.3%}",
+                                "Probability gap": f"{prediction['probability'] - truth['probability']:.3%}",
                                 "Actual rank": f"{truth['rank']:,} / {result['vocabulary_size']:,}",
                                 "Top-5 hit": "Yes" if truth["rank"] <= 5 else "No",
                             }
                         )
-                    st.dataframe(pd.DataFrame(summary_rows), hide_index=True, use_container_width=True)
+                    st.dataframe(pd.DataFrame(summary_rows), hide_index=True, width="stretch")
                     for result in model_results:
                         truth = result["ground_truth"]
                         if truth["correct"]:

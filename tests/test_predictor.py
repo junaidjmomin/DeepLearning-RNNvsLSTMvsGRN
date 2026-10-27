@@ -85,5 +85,33 @@ class TestDatasetExampleStore(unittest.TestCase):
             self.assertEqual(store.get("train:0")["target"], "one")
 
 
+class TestRealModelTrace(unittest.TestCase):
+    def test_trace_reconstructs_each_architecture_probability_output(self):
+        from types import SimpleNamespace
+        import tensorflow as tf
+
+        from src.training.train_unified import _build_and_compile
+
+        settings = SimpleNamespace(embedding_dim=4, hidden_units=6, dropout=0.0,
+                                   recurrent_dropout=0.0, learning_rate=0.001,
+                                   batch_size=2, seed=42)
+        with tempfile.TemporaryDirectory() as tmp:
+            vocab_path = Path(tmp) / "vocab.json"
+            vocab_path.write_text(json.dumps({"a": 0, "b": 1, "c": 2}), encoding="utf-8")
+            for name in ("rnn", "gru", "lstm"):
+                with self.subTest(model=name):
+                    tf.keras.backend.clear_session()
+                    model, _ = _build_and_compile(name, 5, 3, settings)
+                    predictor = NextWordPredictor(vocab_path=vocab_path, models={name: model})
+                    result = predictor.predict("a b c", name, include_trace=True)
+                    self.assertTrue(result["trace"]["available"], result["trace"])
+                    self.assertEqual(len(result["trace"]["steps"]), 3)
+                    self.assertAlmostEqual(result["trace"]["output"]["softmax_sum"], 1.0, places=5)
+                    self.assertEqual(result["trace"]["hidden_units"], 6)
+                    padded = predictor.predict("b c", name, include_trace=True)
+                    self.assertTrue(padded["trace"]["available"], padded["trace"])
+                    self.assertFalse(padded["trace"]["steps"][0]["active"])
+
+
 if __name__ == "__main__":
     unittest.main()

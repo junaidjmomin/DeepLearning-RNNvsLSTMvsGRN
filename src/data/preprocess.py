@@ -1,71 +1,71 @@
+"""Create dialogue-disjoint next-word examples for a chosen context length."""
+
+from __future__ import annotations
+
+import argparse
 import json
-from pathlib import  Path 
-import re 
-import random 
+import random
+from pathlib import Path
 
-#Variables initilization!!
-datapath=Path("data/raw/dailydialog/data/dialogues.json")
-OUTPUT_PATH = Path("data/processed/sequences.json")
-utterances=[]
-
-context_size=3
-samples=[]
+from src.data.tokenizer import tokenize
 
 
-# Read THE DATASET !!
-with open(datapath,"r",encoding='utf-8') as file:
-    dialogues=json.load(file)
-
-#Separating  the dataset into training and testing and validation data!!
-
-random.seed(42)
-random.shuffle(dialogues)
-n = len(dialogues)
-train_end = int(n * 0.8)
-val_end = int(n * 0.9)
-
-train_dialogues = dialogues[:train_end]
-val_dialogues = dialogues[train_end:val_end]
-test_dialogues = dialogues[val_end:]
-
-
-
-print("Total Dialogues in the chat!!",len(dialogues))
-def create_sample(dialogues):
+def create_samples(dialogues: list[dict], context_size: int) -> list[dict[str, str]]:
+    if context_size < 1:
+        raise ValueError("context_size must be positive")
     samples = []
-
     for dialogue in dialogues:
         for turn in dialogue["turns"]:
-            text = turn["utterance"].lower().strip()
-            text = re.sub(r"\s+", " ", text)
-
-            if text:
-                words = text.split()
-
-                for i in range(context_size, len(words)):
-                    context = words[i-context_size:i]
-                    target = words[i]
-
-                    samples.append({
-                        "input": " ".join(context),
-                        "target": target
-                    })
-
+            words = tokenize(turn["utterance"])
+            for index in range(context_size, len(words)):
+                samples.append({
+                    "input": " ".join(words[index - context_size:index]),
+                    "target": words[index],
+                })
     return samples
 
-datasets = {
-    "train.json": create_sample(train_dialogues),
-    "validation.json": create_sample(val_dialogues),
-    "test.json": create_sample(test_dialogues)
-}
 
-OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
+def prepare_data(source: Path, output_dir: Path, context_size: int = 3, seed: int = 42) -> dict[str, int]:
+    if context_size < 1:
+        raise ValueError("context_size must be positive")
+    with Path(source).open(encoding="utf-8") as handle:
+        dialogues = json.load(handle)
+    if not isinstance(dialogues, list):
+        raise ValueError("Source dialogues must be a JSON list")
+    shuffled = list(dialogues)
+    random.Random(seed).shuffle(shuffled)
+    train_end = int(len(shuffled) * 0.8)
+    validation_end = int(len(shuffled) * 0.9)
+    splits = {
+        "train": shuffled[:train_end],
+        "validation": shuffled[train_end:validation_end],
+        "test": shuffled[validation_end:],
+    }
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    counts = {}
+    for name, split in splits.items():
+        samples = create_samples(split, context_size)
+        with (output_dir / f"{name}.json").open("w", encoding="utf-8") as handle:
+            json.dump(samples, handle, ensure_ascii=False)
+        counts[name] = len(samples)
+    with (output_dir / "metadata.json").open("w", encoding="utf-8") as handle:
+        json.dump({"context_size": context_size, "seed": seed, "dialogue_counts": {name: len(split) for name, split in splits.items()}}, handle, indent=2)
+    return counts
 
-for filename, data in datasets.items():
-    with open(OUTPUT_PATH.parent / filename, "w", encoding="utf-8") as file:
-        json.dump(data, file, indent=2, ensure_ascii=False)
 
-    print(filename, ":", len(data), "samples")
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Prepare DailyDialog next-word examples")
+    parser.add_argument("--source", type=Path, default=Path("data/raw/dailydialog/data/dialogues.json"))
+    parser.add_argument("--context-size", type=int, default=3)
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--output-dir", type=Path)
+    args = parser.parse_args()
+    if args.context_size < 1:
+        parser.error("--context-size must be positive")
+    output_dir = args.output_dir or Path(f"data/processed_ctx{args.context_size}" if args.context_size != 3 else "data/processed")
+    print(prepare_data(args.source, output_dir, args.context_size, args.seed))
 
-    for sample in data[:3]:
-        print(sample)
+
+if __name__ == "__main__":
+    main()
