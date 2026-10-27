@@ -10,11 +10,11 @@ The vanilla RNN has no gates or separate cell state, so context passes through i
 
 The implementation uses 256 units and dropout 0.2. A dense layer scores 35,846 words; softmax turns scores into probabilities. Adam and sparse categorical cross-entropy train it. Validation loss selects the best checkpoint and guides early stopping.
 
-The analysis reports 13,899,270 parameters, 3.9 percent Top-1, 10 percent Top-3, cross-entropy 8.08, and perplexity 3,223. It reports fastest training at 35.4 seconds and inference at 13.1 milliseconds. The cited files are absent, so these figures cannot be independently verified.”
+The current saved diagnostic run has 13,899,270 parameters. It reached 3.65 percent Top-1, 8.65 percent Top-3, and 15.10 percent Top-5 accuracy, with cross-entropy 8.010 and perplexity 3,010.33. In this CPU run it also had the lowest measured training time, 11.05 seconds, and inference latency, 16.409 milliseconds. Each checkpoint completed one epoch on at most 10,000 training examples, so these scores are preliminary.”
 
 ## Key points to remember
 
 - The hidden state is updated once for each input word, in sequence order.
 - The model has no gates or separate cell state; its simplicity is useful as a baseline.
 - Vanishing gradients are a possible limitation, especially for longer sequences.
-- Project-reported RNN figures: 3.90% Top-1, 10.00% Top-3, cross-entropy 8.08, perplexity 3,223.
+- Current saved RNN run: 3.65% Top-1, 8.65% Top-3, 15.10% Top-5, cross-entropy 8.0098, perplexity 3,010.33.

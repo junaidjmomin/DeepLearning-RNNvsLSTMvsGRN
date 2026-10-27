@@ -16,6 +16,7 @@ RESULTS_DIR = Path(os.getenv("CONTEXTNEXT_RESULTS_DIR", "results"))
 METRICS = {
     "top_1_accuracy": ("Top-1 accuracy", "higher"),
     "top_3_accuracy": ("Top-3 accuracy", "higher"),
+    "top_5_accuracy": ("Top-5 accuracy", "higher"),
     "cross_entropy": ("Cross-entropy", "lower"),
     "perplexity": ("Perplexity", "lower"),
     "rmse": ("RMSE", "lower"),
@@ -72,7 +73,7 @@ def api_status() -> tuple[bool, dict]:
 def format_metric(key: str, value):
     if value is None:
         return "—"
-    if key in {"top_1_accuracy", "top_3_accuracy"}:
+    if key in {"top_1_accuracy", "top_3_accuracy", "top_5_accuracy"}:
         return f"{float(value):.1%}"
     if key in {"cross_entropy", "perplexity", "rmse"}:
         return f"{float(value):.4f}"
@@ -248,40 +249,203 @@ with overview_tab:
             st.dataframe(pd.DataFrame(settings_rows), hide_index=True, use_container_width=True)
             st.caption("Check these settings before attributing a score difference to architecture. Missing values mean the run did not record that setting.")
 
+def architecture_details(model_name: str) -> tuple[list[str], str]:
+    if model_name == "rnn":
+        return (
+            ["Token embeddings", "SimpleRNN cell updates hidden state for each word", "Final hidden state", "Vocabulary softmax"],
+            "hₜ = tanh(Wₓxₜ + Wₕhₜ₋₁ + b)",
+        )
+    if model_name == "gru":
+        return (
+            ["Token embeddings", "GRU reset and update gates", "Final hidden state", "Vocabulary softmax"],
+            "The reset and update gates control how the previous hidden state and current input form the next state.",
+        )
+    return (
+        ["Token embeddings", "LSTM forget, input, and output gates", "Cell state and final hidden state", "Vocabulary softmax"],
+        "The cell state carries information through the sequence; the gates control what it forgets, stores, and exposes.",
+    )
+
+
 with prediction_tab:
-    st.markdown('<div class="section-kicker">Next-word prediction</div>', unsafe_allow_html=True)
-    st.subheader("Try the models")
-    st.write("Enter a sentence and inspect each model’s most likely next words.")
+    st.markdown('<div class="section-kicker">Interactive model experiment</div>', unsafe_allow_html=True)
+    st.subheader("Run a next-word simulation")
+    st.write("Choose an architecture and input, then inspect the actual token IDs, model scores, and labelled target.")
     if not api_online:
-        st.warning("The prediction API is offline. Start it with `uvicorn api.main:app --reload` to use this panel.")
+        st.warning("The prediction API is offline. Start it with `uvicorn api.main:app --reload` to run an experiment.")
     elif not available_models:
-        st.info("No model checkpoints are available. Train a model and place its checkpoint under `artifacts/models/`.")
+        st.info("No usable model checkpoints are loaded. Check the paths shown by the API health endpoint.")
     else:
-        model_choice = st.selectbox("Architecture", available_models, format_func=pretty_model)
-        sentence = st.text_input("Sentence context", placeholder="I would like to")
-        top_k = st.slider("Suggestions", 1, 10, 5)
-        if st.button("Predict next word", type="primary"):
+        model_options = (["all"] if len(available_models) > 1 else []) + available_models
+        model_choice = st.selectbox(
+            "1 · Choose model",
+            model_options,
+            format_func=lambda name: "Compare all available models" if name == "all" else pretty_model(name),
+        )
+        experiment_mode = st.radio(
+            "2 · Choose experiment",
+            ["Custom input", "Dataset example"],
+            horizontal=True,
+        )
+
+        example_id = None
+        selected_example = None
+        if experiment_mode == "Dataset example":
+            split_choice = st.selectbox("Dataset split", ["train", "validation", "test", "all"], index=0)
+            search_query = st.text_input("Find a labelled context", placeholder="vegetarian supreme and")
+            try:
+                example_response = requests.get(
+                    f"{API_URL}/examples",
+                    params={"split": split_choice, "q": search_query, "limit": 100},
+                    timeout=30,
+                )
+                example_response.raise_for_status()
+                dataset_examples = example_response.json().get("examples", [])
+            except requests.RequestException as exc:
+                dataset_examples = []
+                detail = exc.response.text if exc.response is not None else str(exc)
+                st.error(f"Could not load labelled examples: {detail}")
+
+            if dataset_examples:
+                selected_example = st.selectbox(
+                    "Select the exact labelled record",
+                    dataset_examples,
+                    format_func=lambda item: f"{item['input']}  →  {item['target']}  ·  {item['split']} ({item['id']})",
+                )
+                sentence = selected_example["input"]
+                example_id = selected_example["id"]
+                st.caption(f"This record's stored target is **{selected_example['target']}** in the **{selected_example['split']}** split.")
+                if selected_example["split"] != "test":
+                    st.caption("This selected row is not a held-out test example; use it to inspect model behavior, not to claim test accuracy.")
+            else:
+                sentence = ""
+                st.info("No labelled contexts match that search. Try another term or switch to a different split.")
+        else:
+            sentence = st.text_area(
+                "Input text",
+                value="vegetarian supreme and",
+                height=90,
+                help="The model uses the last three words for the default checkpoints.",
+            )
+
+        top_k = st.slider("Show top predictions", 1, 20, 5)
+        run_clicked = st.button("Run simulation", type="primary")
+        run_models = available_models if model_choice == "all" else [model_choice]
+        signature = (experiment_mode, sentence.strip(), example_id, model_choice, top_k)
+
+        if run_clicked:
             if not sentence.strip():
-                st.error("Enter a sentence to get predictions.")
+                st.error("Choose or enter an input before running the simulation.")
             else:
                 try:
-                    response = requests.post(
-                        f"{API_URL}/predict",
-                        json={"sentence": sentence, "model": model_choice, "top_k": top_k},
-                        timeout=30,
-                    )
-                    response.raise_for_status()
-                    predictions = response.json().get("predictions", [])
-                    for rank, item in enumerate(predictions, start=1):
-                        with st.container(border=True):
-                            col_rank, col_word, col_bar, col_prob = st.columns([0.55, 1.5, 5, 1])
-                            col_rank.caption(f"{rank:02d}")
-                            col_word.markdown(f"**{item['word']}**")
-                            col_bar.progress(min(max(float(item["probability"]), 0.0), 1.0))
-                            col_prob.markdown(f"**{float(item['probability']):.1%}**")
+                    model_results = []
+                    for model_name in run_models:
+                        response = requests.post(
+                            f"{API_URL}/predict",
+                            json={
+                                "sentence": sentence,
+                                "model": model_name,
+                                "top_k": top_k,
+                                "example_id": example_id,
+                            },
+                            timeout=60,
+                        )
+                        response.raise_for_status()
+                        model_results.append(response.json())
+                    st.session_state["contextnext_simulation"] = {"signature": signature, "results": model_results}
                 except requests.RequestException as exc:
                     detail = exc.response.text if exc.response is not None else str(exc)
-                    st.error(f"Prediction failed: {detail}")
+                    st.error(f"Simulation failed: {detail}")
+
+        simulation = st.session_state.get("contextnext_simulation")
+        if not simulation or simulation["signature"] != signature:
+            st.caption("Run the simulation to see the model's real output and dataset comparison.")
+        else:
+            model_results = simulation["results"]
+            first_result = model_results[0]
+            st.markdown("### 1 · What did I give the model?")
+            st.code(sentence, language=None)
+
+            st.markdown("### 2 · How was it tokenized?")
+            tokenization = first_result["tokenization"]
+            token_rows = [
+                {"Position": i + 1, "Token": token, "Token ID": token_id, "Decoded ID": decoded}
+                for i, (token, token_id, decoded) in enumerate(
+                    zip(tokenization["context_tokens"], tokenization["token_ids"], tokenization["decoded_tokens"])
+                )
+            ]
+            st.dataframe(pd.DataFrame(token_rows), hide_index=True, use_container_width=True)
+            st.caption(
+                f"Model context: {first_result['sequence_length']} words · vocabulary: {first_result['vocabulary_size']:,} IDs · "
+                f"checkpoint: `{first_result['checkpoint']}`"
+            )
+
+            st.markdown("### 3 · How does the model process it?")
+            architecture_columns = st.columns(len(model_results))
+            for column, result in zip(architecture_columns, model_results):
+                steps, explanation = architecture_details(result["model"])
+                with column:
+                    st.markdown(f"**{pretty_model(result['model'])}**")
+                    st.markdown(" → ".join(steps))
+                    st.caption(explanation)
+
+            st.markdown("### 4 · What did it predict?")
+            distribution_tabs = st.tabs([pretty_model(result["model"]) for result in model_results])
+            for tab, result in zip(distribution_tabs, model_results):
+                with tab:
+                    for item in result["predictions"]:
+                        rank_col, word_col, bar_col, probability_col = st.columns([0.55, 1.5, 5, 1])
+                        rank_col.caption(f"{item['rank']:02d}")
+                        word_col.markdown(f"**{item['word']}**")
+                        bar_col.progress(min(max(float(item["probability"]), 0.0), 1.0))
+                        probability_col.markdown(f"**{float(item['probability']):.2%}**")
+
+            ground_truth = first_result["ground_truth"]
+            st.markdown("### 5 · What was the actual next word?")
+            if ground_truth["available"]:
+                source = ground_truth.get("source", {})
+                if "split" in source:
+                    st.success(f"Ground truth: **{ground_truth['target']}** · source: **{source['split']}** split · `{source['id']}`")
+                else:
+                    st.success(f"Ground truth: **{ground_truth['target']}** · found in {source.get('matches', 1)} labelled record(s)")
+
+                if ground_truth["representable"]:
+                    st.markdown("### 6 · Was the model correct?")
+                    summary_rows = []
+                    for result in model_results:
+                        truth = result["ground_truth"]
+                        prediction = result["predictions"][0]
+                        summary_rows.append(
+                            {
+                                "Model": pretty_model(result["model"]),
+                                "Prediction": prediction["word"],
+                                "Actual": truth["target"],
+                                "Correct": "Yes" if truth["correct"] else "No",
+                                "P(actual)": f"{truth['probability']:.3%}",
+                                "Actual rank": f"{truth['rank']:,} / {result['vocabulary_size']:,}",
+                                "Top-5 hit": "Yes" if truth["rank"] <= 5 else "No",
+                            }
+                        )
+                    st.dataframe(pd.DataFrame(summary_rows), hide_index=True, use_container_width=True)
+                    for result in model_results:
+                        truth = result["ground_truth"]
+                        if truth["correct"]:
+                            st.success(f"{pretty_model(result['model'])} ranked the labelled word first in this example.")
+                        else:
+                            st.info(
+                                f"{pretty_model(result['model'])} ranked **{result['predictions'][0]['word']}** first; "
+                                f"the labelled word **{truth['target']}** was rank {truth['rank']:,} "
+                                f"({truth['probability']:.3%}). DailyDialog supplies one reference word for each row."
+                            )
+                else:
+                    st.warning(
+                        f"The target word is outside the model vocabulary. Its probability and rank below refer to the `<unk>` bucket ({ground_truth['probability']:.3%}, rank {ground_truth['rank']:,}), not to the exact word."
+                    )
+            else:
+                st.info(f"Ground truth unavailable: {ground_truth['reason']}")
+                for candidate in ground_truth.get("candidates", []):
+                    sources = ", ".join(f"{item['split']} · {item['id']}" for item in candidate["examples"])
+                    st.caption(f"Stored target **{candidate['target']}**: {sources}")
+                st.caption("Model predictions are still shown above. Select one exact dataset row to score an ambiguous context.")
 
 with method_tab:
     st.markdown('<div class="section-kicker">Project overview</div>', unsafe_allow_html=True)

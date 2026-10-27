@@ -10,11 +10,11 @@ Two learned gates control each update. Sigmoid gives values between zero and one
 
 Our GRU has 256 units and dropout 0.2. A dense layer scores 35,846 words; softmax turns scores into probabilities. Adam and sparse categorical cross-entropy train it, while validation loss selects the best checkpoint and controls early stopping.
 
-The final analysis reports 14,097,158 parameters, 3.3 percent Top-1 and 10 percent Top-3 accuracy, cross-entropy 8.24, and perplexity 3,777. Top-1 checks if the target ranks first; Top-3 checks if it appears in the first three. The report’s metric files and checkpoints are absent here, so these figures cannot be independently verified.”
+In the current saved diagnostic run, the GRU has 14,097,158 parameters. It reached 3.65 percent Top-1, 9.55 percent Top-3, and 15.10 percent Top-5 accuracy, with cross-entropy 8.101 and perplexity 3,296.96. These checkpoints completed one epoch using at most 10,000 training examples, so the figures are preliminary rather than full-training results.”
 
 ## Key points to remember
 
 - Reset gate: controls how much past state informs the candidate update.
 - Update gate: controls the balance between previous and candidate state.
 - The final softmax is over the shared vocabulary; its values represent predicted probabilities.
-- Project-reported GRU figures: 3.30% Top-1, 10.00% Top-3, cross-entropy 8.24, perplexity 3,777.
+- Current saved GRU run: 3.65% Top-1, 9.55% Top-3, 15.10% Top-5, cross-entropy 8.1008, perplexity 3,296.96.

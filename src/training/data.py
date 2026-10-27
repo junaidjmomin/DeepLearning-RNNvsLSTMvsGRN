@@ -42,6 +42,15 @@ class Vocabulary:
     def encode(self, token: str) -> int:
         return self.token_to_id.get(token, OOV_ID)
 
+    @property
+    def id_to_token(self) -> dict[int, str]:
+        """Return the exact inverse of the IDs used by training."""
+        return {token_id: token for token, token_id in self.token_to_id.items()}
+
+    def decode(self, token_id: int) -> str:
+        """Decode a model output ID, including the reserved special IDs."""
+        return self.id_to_token.get(int(token_id), OOV_TOKEN)
+
 
 def load_examples(
     path: Path,

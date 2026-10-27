@@ -156,12 +156,13 @@ class TestEvaluateModel(unittest.TestCase):
         # target 1 is top-1 for first, target 2 is top-3 (but not top-1) for second
         metrics = evaluate_model(model, np.array([[1], [2]]), np.array([1, 2]), batch_size=2)
         self.assertGreaterEqual(metrics["top_3_accuracy"], metrics["top_1_accuracy"])
+        self.assertGreaterEqual(metrics["top_5_accuracy"], metrics["top_3_accuracy"])
 
     def test_metrics_keys_present(self):
         probs = self._probs([[0.1, 0.8, 0.1], [0.7, 0.2, 0.1]])
         model = _FakeModel(probs)
         metrics = evaluate_model(model, np.array([[1], [2]]), np.array([1, 2]), batch_size=2)
-        for key in ("mse", "mae", "rmse", "cross_entropy", "perplexity", "top_1_accuracy", "top_3_accuracy", "parameter_count"):
+        for key in ("mse", "mae", "rmse", "cross_entropy", "perplexity", "top_1_accuracy", "top_3_accuracy", "top_5_accuracy", "parameter_count"):
             self.assertIn(key, metrics, f"Missing metric key: {key}")
 
     def test_parameter_count_delegated(self):

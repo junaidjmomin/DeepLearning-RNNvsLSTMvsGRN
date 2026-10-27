@@ -1,212 +1,96 @@
-# ContextNext — Final Analysis Report
+# ContextNext — Pipeline Audit and Current Model Analysis
 
-**Project:** GRU vs Vanilla RNN vs LSTM — Next-Word Prediction  
-**Dataset:** DailyDialog (conversational text)  
-**Task:** Given the previous 3 words, predict the next word  
-**Context length:** 3 words  
-**Vocabulary size:** 35,846 tokens  
-**Hardware:** CPU (RTX 3050 not used — TensorFlow on native Windows is CPU-only)
+**Task:** predict the next word from a three-word context.
+**Dataset:** DailyDialog, split by dialogue into train, validation, and test.
+**Vocabulary:** 35,844 tokens from the training split, plus `<pad>` (ID 0) and `<unk>` (ID 1), for 35,846 model outputs.
 
----
+## Findings from the pipeline audit
 
-## 1. What the System Does
+### Data and model training
 
-ContextNext is a next-word prediction system that compares three recurrent neural network architectures fairly on the same data:
+`src/data/preprocess.py` lowercases each utterance, collapses whitespace, and creates one example for each three-word context and its next word. Punctuation is kept as part of a token. Dialogues are shuffled with seed 42 and split 80/10/10 before examples are created. This prevents dialogue-level leakage between splits, though identical short contexts can occur in different dialogues and may have different next words.
 
-```
-Input sentence → Tokenize → Last 3 words → Embedding (128-dim) → RNN/GRU/LSTM (256 units) → Dense + Softmax (35,846 classes) → Top-K predicted words
-```
+`src/data/build_vocab.py` builds the vocabulary from training examples. `Vocabulary.from_json` orders those words by their stored IDs and reserves IDs 0 and 1 for padding and unknown words. The shared `load_examples` function encodes both context words and targets through `Vocabulary.encode`, left-pads short inputs, and keeps the most recent words when an input exceeds the model context length.
 
-All three models share:
-- Identical train/validation/test splits (80/10/10)
-- Identical vocabulary (`data/processed/vocab.json`)
-- Identical hyperparameters: embedding 128, hidden 256, dropout 0.2, Adam lr 0.001, batch 256, seed 42
-- Identical loss: Sparse Categorical Cross-Entropy
-- Identical metrics: Top-1 Accuracy, Top-3 Accuracy
+All three saved architectures use an embedding of 128 dimensions, one recurrent layer with 256 units, dropout 0.2, and a 35,846-class softmax. The shared trainer uses Adam at 0.001, sparse categorical cross-entropy, batch size 256, seed 42, and early stopping on validation loss with patience 3. It saves both the best-validation and final checkpoints.
 
-So any difference in results comes from the **recurrent cell architecture only**, not training conditions.
+The current result configurations show **one epoch**, at most **10,000 training examples**, and **2,000 validation and test examples** for each model. These are short diagnostic runs, not full-data training. In the current environment TensorFlow 2.22.0-rc0 detects no GPU.
 
----
+### Inference bug
 
-## 2. How Each Model Works (Code Explanation)
+The old predictor added 2 to each known token ID after loading `Vocabulary.token_to_id`. Those IDs already include the padding and unknown-token offset used by training. It also added 2 again when building the output ID-to-word map. As a result, inference supplied different IDs from training and decoded model output IDs as different words.
 
-All three models live in `src/models/`:
+The predictor now calls the same `Vocabulary.encode` used by training and decodes with its inverse mapping. For the diagnostic input, the corrected IDs are:
 
-### Vanilla RNN (`src/models/rnn.py`)
-Architecture: `Embedding → SimpleRNN → Dense(softmax)`
-
-- Uses `tf.keras.layers.SimpleRNN` — the simplest recurrent cell
-- Hidden state: `h_t = tanh(W·x_t + U·h_{t-1} + b)`
-- **No gates** — the entire history is compressed into one hidden vector
-- Suffers from **vanishing gradients** on longer sequences
-- Fastest to train (fewest parameters: ~13.9M)
-
-### GRU (`src/models/gru.py`)
-Architecture: `Embedding → GRU → Dense(softmax)`
-
-- Uses `tf.keras.layers.GRU` — Gated Recurrent Unit
-- **Two gates:**
-  - **Update gate** — decides how much past information to keep vs. discard
-  - **Reset gate** — decides how much new input to add to the candidate state
-- Simpler and faster than LSTM, but still handles longer dependencies better than vanilla RNN
-- Parameter count: ~14.1M
-
-### LSTM (`src/models/lstm.py`)
-Architecture: `Embedding → LSTM → Dense(softmax)`
-
-- Uses `tf.keras.layers.LSTM` — Long Short-Term Memory
-- **Three gates** plus a **cell state** that runs in parallel to the hidden state:
-  - **Forget gate** — decides what to discard from the cell state
-  - **Input gate** — decides what new information to store
-  - **Output gate** — decides what to output from the cell state
-- Best at remembering long-range dependencies because gradients can flow through the cell state unchanged
-- Parameter count: ~14.2M (most parameters due to 3 gate matrices)
-
-### Shared components
-- **Embedding layer** (`mask_zero=True`): converts word IDs to 128-dimensional vectors; padding tokens are masked so they don't affect the hidden state.
-- **Dense + Softmax**: outputs a probability distribution over all 35,846 vocabulary words.
-- **`<PAD>`** (ID 0) and **`<UNK>`** (ID 1) special tokens handle padding and unknown words.
-
----
-
-## 3. Inference Pipeline (`src/inference/predictor.py` + `api/main.py`)
-
-1. **API** (`api/main.py`): FastAPI with two endpoints:
-   - `GET /health` — reports vocabulary and model availability
-   - `POST /predict` — accepts `{sentence, model, top_k}` and returns top-K predictions
-2. **Predictor** (`src/inference/predictor.py`):
-   - Lazily loads `.keras` checkpoints (only when first requested)
-   - Encodes the input sentence: lowercase → split → take last N tokens → map to IDs via vocab → unknown words → `<UNK>`
-   - Left-pads to `sequence_length` (3)
-   - Runs `model.predict(training=False)`
-   - Returns top-K words sorted by probability
-3. **UI** (`app/streamlit_app.py`): Streamlit frontend with three tabs:
-   - **Prediction:** type a sentence, choose GRU/RNN/LSTM, see top predictions
-   - **Model Comparison:** bar charts of accuracy, perplexity, RMSE, training time, params
-   - **How it works:** explains the pipeline
-
----
-
-## 4. Final Test Results (context=3, 1,000 test samples)
-
-| Metric | GRU | RNN | LSTM |
-|--------|-----|-----|------|
-| Top-1 Accuracy | 3.30% | 3.90% | 3.90% |
-| Top-3 Accuracy | 10.00% | 10.00% | 10.20% |
-| Cross-Entropy Loss | 8.24 | 8.08 | 7.98 |
-| Perplexity | 3,777 | 3,223 | 2,914 |
-| RMSE | 0.00527 | 0.00526 | 0.00528 |
-| MAE | 0.0000551 | 0.0000553 | 0.0000552 |
-| Parameters | 14,097,158 | 13,899,270 | 14,194,950 |
-| Training Time | 41.5s | 35.4s | 36.8s |
-| Inference Latency | 19.4ms | 13.1ms | 33.7ms |
-
-*Source: `results/gru_test_metrics.json`, `results/rnn_test_metrics.json`, `results/lstm_test_metrics.json`*
-
----
-
-## 5. Which Model is Best?
-
-**LSTM is the best model.**
-
-### Why LSTM won:
-- **Lowest perplexity (2,914)**: LSTM is least "perplexed" by the test data — its probability distribution is closest to the true next-word distribution.
-- **Lowest cross-entropy (7.98)**: best classification objective.
-- **Highest Top-3 accuracy (10.2%)**: most often places the correct word in the top 3 suggestions.
-- **Tied Top-1 accuracy (3.9%)** with RNN.
-
-### Why RNN is close:
-- At context length = 3 (short context), the vanishing-gradient problem of vanilla RNN is not severe yet, so RNN performs nearly as well as GRU/LSTM on Top-1.
-- RNN is fastest to train (35.4s) and fastest inference (13.1ms).
-
-### Why GRU is middle:
-- GRU sits between RNN and LSTM — better than RNN on perplexity, but not as good as LSTM.
-- Good balance if you want gated memory without LSTM's parameter cost.
-
-### Recommendation:
-- **For accuracy:** Use **LSTM** (best perplexity, best Top-3).
-- **For speed/deployment:** Use **RNN** (fastest training + inference, ~14% fewer params than LSTM).
-- **For balance:** Use **GRU** (gated memory, fewer gates than LSTM).
-
----
-
-## 6. Sample Output
-
-Input: `"i would like to"` | Model: `lstm` | Top-5 predictions:
-
-| Rank | Word | Probability |
-|------|------|-------------|
-| 1 | the | 9.28% |
-| 2 | you | 7.06% |
-| 3 | a | 6.99% |
-| 4 | to | 6.91% |
-| 5 | i | 5.04% |
-
-API response (`POST /predict`):
-```json
-{
-  "model": "lstm",
-  "context": ["would", "like", "to"],
-  "predictions": [
-    {"word": "the", "probability": 0.0928},
-    {"word": "you", "probability": 0.0706},
-    {"word": "a", "probability": 0.0699},
-    {"word": "to", "probability": 0.0691},
-    {"word": "i", "probability": 0.0504}
-  ]
-}
+```text
+vegetarian → 33868
+supreme    → 30927
+and        → 2461
 ```
 
----
+All three loaded checkpoints accept a context of length 3 and return 35,846 probabilities, matching the shared vocabulary.
 
-## 7. Files to Check (Code Reference)
+### Labelled examples and duplicate contexts
 
-| Purpose | File |
-|---------|------|
-| GRU model | `src/models/gru.py` |
-| Vanilla RNN model | `src/models/rnn.py` |
-| LSTM model | `src/models/lstm.py` |
-| Training (all 3, unified) | `src/training/train_unified.py` |
-| Train all batch script | `train_all.bat` |
-| Evaluation metrics | `src/training/evaluate.py` |
-| Inference / prediction | `src/inference/predictor.py` |
-| FastAPI backend | `api/main.py` |
-| Streamlit frontend | `app/streamlit_app.py` |
-| Data preprocessing | `src/data/preprocess.py` |
-| Vocabulary builder | `src/data/build_vocab.py` |
-| Tokenizer | `src/data/tokenizer.py` |
-| Trained models | `artifacts/models/{gru,rnn,lstm}_{best,final}.keras` |
-| Test metrics | `results/{gru,rnn,lstm}_test_metrics.json` |
-| Processed data | `data/processed/{train,validation,test,vocab}.json` |
-| Docker | `Dockerfile`, `docker-compose.yml` |
+The processed data contains:
 
----
+| Context | Split and row | Stored target |
+|---|---|---|
+| `vegetarian supreme and` | train, row 7 | `one` |
+| `supreme and one` | train, row 8 | `double` |
+| `and one double` | train, row 9 | `pepperoni.` |
+| `and one double` | validation, row 50,011 | `room` |
 
-## 8. How to Run (for Demo)
+The last context has two ground-truth labels, so the app lets a learner select the exact split row. For custom input, it reports ground truth only when there is one distinct matching label. Otherwise, it shows the candidate labels and still displays predictions.
 
-**Terminal 1 — Start API:**
-```cmd
-python -m uvicorn api.main:app --host 127.0.0.1 --port 8000
+## Current saved-run metrics
+
+Top-1, Top-3, and Top-5 are the share of test rows where the reference target appears in the first 1, 3, or 5 predictions. Cross-entropy and perplexity use the model probability assigned to the one stored target. Top-5 was added by the shared evaluator and recalculated from the saved checkpoints on the same 2,000 test rows.
+
+| Metric | GRU | Vanilla RNN | LSTM |
+|---|---:|---:|---:|
+| Top-1 accuracy | 3.65% | 3.65% | 3.65% |
+| Top-3 accuracy | 9.55% | 8.65% | **10.10%** |
+| Top-5 accuracy | 15.10% | 15.10% | 15.10% |
+| Cross-entropy ↓ | 8.1008 | 8.0098 | **7.9414** |
+| Perplexity ↓ | 3,296.96 | 3,010.33 | **2,811.19** |
+| RMSE ↓ | 0.005279 | **0.005267** | 0.005282 |
+| Parameters | 14,097,158 | **13,899,270** | 14,194,950 |
+| Training time | 11.18 s | **11.05 s** | 11.73 s |
+| Warmed CPU inference latency | 21.666 ms | **16.409 ms** | 22.364 ms |
+
+The LSTM has the lowest cross-entropy and perplexity and the best Top-3 score in these runs. Top-1 and Top-5 are tied. The RNN has the lowest parameter count and measured latency in this local run. These small differences are preliminary because each checkpoint completed only one epoch on a capped training subset; the latency numbers are also specific to this CPU environment.
+
+## Exact-input model outputs
+
+For `vegetarian supreme and`, the dataset target is `one`. The corrected predictor produces these actual checkpoint outputs:
+
+| Model | Top prediction | Probability | `one` probability | Rank of `one` | Correct? |
+|---|---|---:|---:|---:|---|
+| Vanilla RNN | `the` | 4.1431% | 0.4924% | 41 | No |
+| GRU | `the` | 3.3585% | 0.3528% | 49 | No |
+| LSTM | `the` | 0.2758% | 0.0569% | 58 | No |
+
+The word `one` is present in the training example, but it is not the top prediction from these saved checkpoints. The exact row appears at index 7, is included in the first 10,000 training samples, and was seen during one epoch. Its presence in the training data is not a guarantee that a short run memorizes it.
+
+### Controlled training sanity check
+
+To distinguish an inference/vocabulary issue from a basic training issue, a temporary three-row dataset used these mappings:
+
+```text
+vegetarian supreme and → one
+supreme and one        → double
+and one double         → pepperoni.
 ```
 
-**Terminal 2 — Start UI:**
-```cmd
-python -m streamlit run app/streamlit_app.py --server.port 8501
-```
+The shared vocabulary loader, example encoder, model builders, and evaluator were used with small 8-dimensional embeddings and 16 recurrent units. Each architecture trained on repeated copies of the rows for 40 epochs. Training loss decreased for all three, and each reached 100% Top-1 on the three controlled examples. The check wrote no weights or metrics into the project artifacts. This establishes that the shared training path can learn the small mapping; it does not make claims about full DailyDialog quality.
 
-**Browser:** open `http://localhost:8501`
+## Application behavior
 
-**Or with Docker:**
-```cmd
-docker compose up
-```
-Then open `http://localhost:8501`
+The Streamlit Predict tab is an educational simulation. It supports custom text, split-specific dataset examples, an individual architecture or Compare All, and displays actual token IDs, architecture steps, ranked probabilities, target probability/rank, and correctness. `<unk>` probability is labelled as the unknown-token bucket when the reference target is absent from the training vocabulary.
 
----
+The FastAPI service exposes `GET /health`, `GET /examples`, and `POST /predict`. Health identifies the checkpoint file and model context length actually loaded. The prediction response includes the tokenization, encoded input, ranked words, and ground-truth result when a label can be determined.
 
-## 9. Limitations
+## Metric artifacts
 
-- Trained on only 5,000 samples (capped for CPU training on laptop). Full dataset has 678,869 samples — retraining on full data would improve accuracy.
-- Context length fixed at 3. Longer context (5, 10) would likely separate the models more clearly.
-- CPU-only training (TensorFlow on Windows does not support GPU). RTX 3050 is unused.
-- Perplexity is high (~2,900–3,700) because vocabulary is large (35k+) and next-word prediction is inherently uncertain.
+The current files under `results/` contain the saved run configuration, history, and recalculated test metrics. The inference audit does not alter model weights. To obtain representative final scores, retrain all three models with the same complete train/validation/test splits and aligned settings, then compare the resulting saved metrics.

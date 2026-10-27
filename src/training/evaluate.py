@@ -18,7 +18,8 @@ def evaluate_model(model: Any, contexts: np.ndarray, targets: np.ndarray, batch_
     """Evaluate a model without materialising all vocabulary probabilities at once.
 
     MSE, MAE, and RMSE compare the softmax probabilities with the one-hot target.
-    Cross-entropy, accuracy, and perplexity are the main next-word metrics.
+    Cross-entropy, Top-1/Top-3/Top-5 accuracy, and perplexity are the main
+    next-word metrics.
     """
 
     ensure_non_empty(contexts, targets)
@@ -33,6 +34,7 @@ def evaluate_model(model: Any, contexts: np.ndarray, targets: np.ndarray, batch_
     cross_entropy_sum = 0.0
     top_1_correct = 0
     top_3_correct = 0
+    top_5_correct = 0
     vocabulary_size: int | None = None
 
     for start in range(0, sample_count, batch_size):
@@ -63,6 +65,8 @@ def evaluate_model(model: Any, contexts: np.ndarray, targets: np.ndarray, batch_
         top_1_correct += int(np.sum(predictions == batch_targets))
         top_k = np.argpartition(probabilities, -min(3, vocabulary_size), axis=1)[:, -min(3, vocabulary_size) :]
         top_3_correct += int(np.sum(np.any(top_k == batch_targets[:, None], axis=1)))
+        top_k = np.argpartition(probabilities, -min(5, vocabulary_size), axis=1)[:, -min(5, vocabulary_size) :]
+        top_5_correct += int(np.sum(np.any(top_k == batch_targets[:, None], axis=1)))
 
     assert vocabulary_size is not None
     mean_squared_error = squared_error_sum / (sample_count * vocabulary_size)
@@ -77,6 +81,7 @@ def evaluate_model(model: Any, contexts: np.ndarray, targets: np.ndarray, batch_
         "perplexity": math.exp(min(cross_entropy, 100.0)),
         "top_1_accuracy": top_1_correct / sample_count,
         "top_3_accuracy": top_3_correct / sample_count,
+        "top_5_accuracy": top_5_correct / sample_count,
         "parameter_count": int(model.count_params()),
         "inference_latency_ms": _mean_single_example_latency_ms(model, contexts),
     }

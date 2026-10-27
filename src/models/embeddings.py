@@ -11,7 +11,7 @@ def get_embedding_layer(embedding_dim=128):
 
     return embedding_layer
 
-'''
+r'''
 
 Embedding vector — 128 dimensions
 [0.21, -0.35, 0.78, 0.14, ... , -0.09]
